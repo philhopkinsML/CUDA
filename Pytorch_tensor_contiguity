@@ -1,0 +1,83 @@
+  1 | import torch
+  2 | 
+  3 | # Decorator to enforce contiguity
+  4 | def enforce_contiguity(fn):
+  5 |     """
+  6 |     A decorator to enforce contiguity on tensor inputs for operations that require it.
+  7 |     The decorator checks whether the tensor is contiguous and applies `.contiguous()` if needed.
+  8 |     """
+  9 |     def wrapper(*args, **kwargs):
+ 10 |         # Check inputs for contiguity
+ 11 |         new_args = []
+ 12 |         for arg in args:
+ 13 |             if isinstance(arg, torch.Tensor) and not arg.is_contiguous():
+ 14 |                 print(f"Making tensor contiguous: shape={arg.shape}, strides={arg.stride()}")
+ 15 |                 new_args.append(arg.contiguous())
+ 16 |             else:
+ 17 |                 new_args.append(arg)
+ 18 | 
+ 19 |         # Handle kwargs similarly if tensors are passed as keyword arguments
+ 20 |         new_kwargs = {
+ 21 |             k: (v.contiguous() if isinstance(v, torch.Tensor) and not v.is_contiguous() else v)
+ 22 |             for k, v in kwargs.items()
+ 23 |         }
+ 24 | 
+ 25 |         # Call the original function with updated arguments
+ 26 |         return fn(*new_args, **new_kwargs)
+ 27 | 
+ 28 |     return wrapper
+ 29 | 
+ 30 | # Example operation: Matrix multiplication with contiguity enforcement
+ 31 | @enforce_contiguity
+ 32 | def matmul_with_contiguity(a, b):
+ 33 |     """
+ 34 |     Perform matrix multiplication. Tensors `a` and `b` must be contiguous.
+ 35 |     """
+ 36 |     return torch.matmul(a, b)
+ 37 | 
+ 38 | # Example model with smart contiguity handling
+ 39 | class SmartModel(torch.nn.Module):
+ 40 |     def __init__(self):
+ 41 |         super(SmartModel, self).__init__()
+ 42 |         self.fc1 = torch.nn.Linear(10, 20)
+ 43 |         self.fc2 = torch.nn.Linear(20, 10)
+ 44 | 
+ 45 |     @enforce_contiguity
+ 46 |     def forward(self, x):
+ 47 |         x = self.fc1(x)
+ 48 |         x = x.transpose(0, 1)  # Non-contiguous operation
+ 49 |         x = self.fc2(x)
+ 50 |         return x
+ 51 | 
+ 52 | # Test the implementation
+ 53 | if __name__ == "__main__":
+ 54 |     # Create non-contiguous tensors
+ 55 |     a = torch.randn(10, 20).transpose(0, 1)  # Transpose makes `a` non-contiguous
+ 56 |     b = torch.randn(20, 30)
+ 57 | 
+ 58 |     print("Without the decorator: Manual contiguity enforcement")
+ 59 |     if not a.is_contiguous():
+ 60 |         a_manual = a.contiguous()
+ 61 |     result_manual = torch.matmul(a_manual, b)
+ 62 |     print("Result (manual):", result_manual)
+ 63 | 
+ 64 |     print("\nWith the decorator: Automatic contiguity enforcement")
+ 65 |     result_smart = matmul_with_contiguity(a, b)
+ 66 |     print("Result (smart):", result_smart)
+ 67 | 
+ 68 |     # Testing with SmartModel
+ 69 |     print("\nTesting SmartModel with contiguity handling:")
+ 70 |     model = SmartModel()
+ 71 |     x = torch.randn(10, 10).transpose(0, 1)  # Non-contiguous input
+ 72 |     output = model(x)
+ 73 |     print("Model output:", output)
+ 74 | 
+ 75 |     # Profiling example
+ 76 |     print("\nProfiling contiguity handling:")
+ 77 |     with torch.profiler.profile(
+ 78 |         activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
+ 79 |         profile_memory=True
+ 80 |     ) as prof:
+ 81 |         result = matmul_with_contiguity(a, b)  # Invocation of the profiler and passing results to enforcer
+ 82 | 
+ 83 |     print(prof.key_averages().table(sort_by="cuda_memory_usage", row_limit=10))
