@@ -1,0 +1,118 @@
+import torch
+import random
+import copy
+from torch.profiler import profile, ProfilerActivity
+
+class GeneticAlgorithmProfiler:
+    def __init__(self, model, train_loader, test_loader, device, population_size=10, generations=5):
+        self.model = model
+        self.train_loader = train_loader
+        self.test_loader = test_loader
+        self.device = device
+        self.population_size = population_size
+        self.generations = generations
+
+        # Define the hyperparameter search space
+        self.search_space = {
+            "learning_rate": [1e-4, 1e-3, 1e-2, 1e-1],
+            "batch_size": [16, 32, 64, 128],
+            "num_layers": [1, 2, 3, 4],
+            "hidden_size": [32, 64, 128, 256],
+        }
+
+        # Initialize the population
+        self.population = [self.random_hyperparams() for _ in range(population_size)]
+
+    def random_hyperparams(self):
+        """Generate a random set of hyperparameters."""
+        return {
+            "learning_rate": random.choice(self.search_space["learning_rate"]),
+            "batch_size": random.choice(self.search_space["batch_size"]),
+            "num_layers": random.choice(self.search_space["num_layers"]),
+            "hidden_size": random.choice(self.search_space["hidden_size"]),
+        }
+
+    def evaluate(self, hyperparams):
+        """Evaluate the model with the given hyperparameters using the profiler."""
+        batch_size = hyperparams["batch_size"]
+        train_loader = torch.utils.data.DataLoader(self.train_loader.dataset, batch_size=batch_size, shuffle=True)
+
+        # Adjust model based on hyperparameters
+        model = copy.deepcopy(self.model)
+        layers = [torch.nn.Linear(hyperparams["hidden_size"], hyperparams["hidden_size"])
+                  for _ in range(hyperparams["num_layers"])]
+        model.fc = torch.nn.Sequential(*layers, torch.nn.Linear(hyperparams["hidden_size"], 10))  # Assuming 10 classes
+        model.to(self.device)
+
+        optimizer = torch.optim.Adam(model.parameters(), lr=hyperparams["learning_rate"])
+        criterion = torch.nn.CrossEntropyLoss()
+
+        # Profiling and training
+        with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True) as prof:
+            for i, (inputs, labels) in enumerate(train_loader):
+                if i >= 5:  # Profile only a few batches for efficiency
+                    break
+                inputs, labels = inputs.to(self.device), labels.to(self.device)
+                optimizer.zero_grad()
+                outputs = model(inputs)
+                loss = criterion(outputs, labels)
+                loss.backward()
+                optimizer.step()
+
+        # Extract profiler metrics
+        avg_time_per_batch = prof.key_averages().table(sort_by="cuda_time_total", row_limit=10)
+        memory_used = prof.key_averages().table(sort_by="self_cuda_memory_usage", row_limit=10)
+
+        # Return fitness score (lower is better)
+        return self.calculate_fitness(avg_time_per_batch, memory_used)
+
+    def calculate_fitness(self, avg_time_per_batch, memory_used):
+        """Combine performance metrics into a fitness score."""
+        time_score = float(avg_time_per_batch.split('\n')[-2].split()[1])  # Parsing example
+        memory_score = float(memory_used.split('\n')[-2].split()[1])
+        return time_score + memory_score * 0.01  # Weighted combination
+
+    def evolve(self):
+        """Evolve the population using genetic algorithms."""
+        for generation in range(self.generations):
+            print(f"Generation {generation + 1}/{self.generations}")
+
+            # Evaluate the fitness of the population
+            fitness_scores = [(self.evaluate(ind), ind) for ind in self.population]
+            fitness_scores.sort(key=lambda x: x[0])  # Lower fitness is better
+            self.population = [ind for _, ind in fitness_scores[:self.population_size // 2]]  # Keep top 50%
+
+            # Generate offspring
+            offspring = []
+            while len(offspring) < self.population_size - len(self.population):
+                parent1, parent2 = random.sample(self.population, 2)
+                child = self.crossover(parent1, parent2)
+                offspring.append(self.mutate(child))
+            self.population.extend(offspring)
+
+    def crossover(self, parent1, parent2):
+        """Combine two parents to produce a child."""
+        child = {}
+        for key in self.search_space.keys():
+            child[key] = random.choice([parent1[key], parent2[key]])
+        return child
+
+    def mutate(self, individual):
+        """Randomly mutate a hyperparameter."""
+        key = random.choice(list(self.search_space.keys()))
+        individual[key] = random.choice(self.search_space[key])
+        return individual
+
+    def recommend(self):
+        """Return the best hyperparameters from the final population."""
+        best_hyperparams = min(self.population, key=lambda ind: self.evaluate(ind))
+        return best_hyperparams
+
+
+# Usage Example
+# Assuming `model`, `train_loader`, `test_loader`, and `device` are already defined
+
+profiler = GeneticAlgorithmProfiler(model, train_loader, test_loader, device)
+profiler.evolve()
+best_hyperparams = profiler.recommend()
+print(f"Recommended Hyperparameters: {best_hyperparams}")
